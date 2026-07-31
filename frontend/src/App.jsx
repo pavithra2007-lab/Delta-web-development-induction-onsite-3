@@ -23,7 +23,6 @@ function App({ user, setUser }) {
 
   return <>
     <header>
-      <button className="logo" onClick={() => setRoute({ page: "home" })}></button>
       <nav>
         <button onClick={() => setRoute({ page: "home" })}>Home</button>
         {user && <button onClick={() => setRoute({ page: "upload" })}>Upload</button>}
@@ -58,18 +57,16 @@ function Home({ user, onWatch }) {
   const [file, setFile] = useState([]);
 
   useEffect(() => {
-  
-    api("/file").then(d => setFile(d.file));
-  }
-, []);
+    if (!user) { setFile([]);
+        return;}
+    api("/file").then(d => setFile(d.file)).catch(() => setFile([]));}, [user]);
   return (
     <>
       <section className="grid">
         {file.map(f => (
-          <article className="card" key={f._id} onClick={() => onWatch(v._id)}>
+          <article className="card" key={f._id} onClick={() => onWatch(f._id)}>
             <div className="thumb">
-              <iframe src={`${API}/file/${f._id}/stream`} preload="metadata" />
-              <span>▶</span>
+              <h2>📄</h2>
             </div>
             <div className="card-body">
               <h3>{f.title}</h3>
@@ -83,7 +80,7 @@ function Home({ user, onWatch }) {
 }
 
 
-function Upload( ) {
+function Upload( {onDone}) {
   const [form, setForm] = useState({});
   const [busy, setBusy] = useState(false);
 
@@ -98,6 +95,9 @@ function Upload( ) {
       await api("/file", { method: "POST", body });
       onDone();
     } catch (e) { alert(e.message); setBusy(false); }
+    finally {
+    setBusy(false);
+}
   }
 
   return (
@@ -108,7 +108,7 @@ function Upload( ) {
         <input
           required
           type="file"
-          accept="*" 
+          accept="*/*" 
           onChange={e => setForm({ ...form, file: e.target.files[0] })}
         />
       </label>
@@ -134,19 +134,19 @@ function Watch({ id, user }) {
   const [file, setFile] = useState(null);
 
   useEffect(() => {
-    api(`/file/${id}`).then(d => setFile(d.file))});
+    api(`/file/${id}`).then(d => setFile(d.file))},[id]);
 
   if (!file) return <div className="center">Loading file...</div>;
 
   return (
     <div className="watch-layout">
       <section>
-        <iframe className="player" src={`${API}/file/${id}/stream`} controls autoPlay />
+        <iframe className="player" src={`${API}/file/${id}/stream`} />
         
         <h1>{file.title}</h1>
         <div className="meta">
           <div>
-            <strong>{file.owner.channelName}</strong>
+            <strong>{file.owner.name}</strong>
             
           </div>
           </div>
@@ -191,13 +191,11 @@ return (
           placeholder="Email"
           onChange={e => setForm({ ...form, email: e.target.value })}
         />
-        {mode !== "forgot" && (
-          <input
-            type="password"
-            placeholder="Password"
-            onChange={e => setForm({ ...form, password: e.target.value })}
-          />
-        )}
+        <input
+          type="password"
+          placeholder="Password"
+          onChange={e => setForm({ ...form, password: e.target.value })}
+        />
         <button className="primary">
           {mode === "signup"
             ? "Sign up"
@@ -213,9 +211,11 @@ return (
             {mode === "signup" ? "Have an account?" : "Create account"}
           </button>
         </div>
+        <div>
+          {message && <p>{message}</p>}
+        </div>
       </form>
     </div>
   );
 }
-
-export default App;
+export default Root;
