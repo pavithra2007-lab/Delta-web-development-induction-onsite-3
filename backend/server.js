@@ -1,5 +1,4 @@
 import express from "express";
-import http from "http";
 import mongoose from "mongoose";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -12,17 +11,9 @@ import fs from "fs";
 
 dotenv.config(); 
 
-const required = [
-  "SECRET",
-];
-
-for (const key of required) {
-  if (!process.env[key]) throw new Error(`Missing environment variable: ${key}`);
-}
-
 const config = {
   port: process.env.PORT || 5000,
-  mongoUri: process.env.MONGO_URI || "mongodb://127.0.0.1:27017/dtube",
+  mongoUri: process.env.MONGO_URI || "mongodb://127.0.0.1:27017/drive",
   clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
   jwtSecret: process.env.SECRET,
   };
@@ -66,24 +57,18 @@ function verifyJwt(token) {
 }
 
 
-await mongoose.connect(config.mongoUri);// Connects Express server to MongoDB.
+await mongoose.connect(config.mongoUri);
+
+
 const app = express();
-app.use(cors({ origin: config.clientUrl, credentials: true })); // allows cross-origin requests from the client URL and includes credentials (cookies) in the requests. This is necessary for the client to communicate with the server when they are hosted on different domains or ports.
 app.use(express.json());
+app.use(cors({ origin: config.clientUrl, credentials: true })); 
 app.use(cookieParser());
-app.use("/api/auth", authRouter);
-
-app.use("/api/file", videosRouter);
-app.use("/api/users", usersRouter);
-app.listen(config.port, () => console.log(` API running on ${config.port}`));
-
 
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  passwordHash: { type: String, default: "" },
-  resetTokenHash: String,
-  resetTokenExpires: Date
+  passwordHash: { type: String, required: true },
 }, { timestamps: true });
 
 const User = mongoose.model("User", userSchema);
@@ -100,9 +85,6 @@ const File = mongoose.model("File", fileSchema);
 
 async function auth(req, res, next) { 
     try {
-    const bearer = req.headers.authorization?.startsWith("Bearer ")
-      ? req.headers.authorization.slice(7)
-      : null;
     const token = req.cookies?.token;
     const payload = verifyJwt(token);
     const user = await User.findById(payload.sub);
@@ -115,8 +97,7 @@ async function auth(req, res, next) {
 }
 
 const authRouter = express.Router();
-const cookieOptions = { httpOnly: true, sameSite: "lax", secure: false, maxAge: 7 * 24 * 60 * 60 * 1000 }; // httpOnly: true means the cookie cannot be accessed by JavaScript, sameSite: "lax" means the cookie will be sent with same-site requests and top-level navigation GET requests, secure: false means the cookie will be sent over HTTP, maxAge: 7 * 24 * 60 * 60 * 1000 means the cookie will expire in 7 days
-
+const cookieOptions = { httpOnly: true, sameSite: "lax", secure: false, maxAge: 7 * 24 * 60 * 60 * 1000 }; 
 function issue(res, user) {
   const token = signJwt({ sub: user._id.toString()
 
@@ -126,10 +107,10 @@ function issue(res, user) {
 
 authRouter.post("/signup", async (req, res) => {
   try {
-    const { name, email, password, channelName } = req.body;
+    const { name, email, password} = req.body;
     if (!name || !email || !password) return res.status(400).json({ message: "Missing fields" });
     if (await User.findOne({ email: email.toLowerCase() })) return res.status(409).json({ message: "Email exists" });
-    const passwordHash = await bcrypt.hash(password, 12); // The 12 is the cost factor . It tells bcrypt how much work to do.
+    const passwordHash = await bcrypt.hash(password, 12);
     const user = await User.create({ name, email, passwordHash, });
     issue(res, user);
     res.status(201).json({ user });
@@ -155,13 +136,15 @@ authRouter.get("/me", auth, (req, res) => res.json({ user: req.user }));
 const usersRouter = express.Router();
 
 usersRouter.get("/:id", async (req, res) => {
-  const user = await User.findById(req.params.id).select("-passwordHash -resetTokenHash");
-  if (!user ) return res.status(404).json({ message: "Channel unavailable" });
-  const videos = await Video.find({ owner: user._id }).sort({ createdAt: -1 });
-  res.json({ user, videos });
+  const user = await User.findById(req.params.id).select("-passwordHash");
+  if (!user ) return res.status(404).json({ message: "User not found" });
+  const file = await File.find({
+    owner: user._id
+  });
+  res.json({ user, file});
 });
 
-const videosRouter = express.Router();
+const fileRouter = express.Router();
 const uploadDir = path.resolve("uploads");
 fs.mkdirSync(uploadDir, { recursive: true }); 
 
@@ -171,27 +154,75 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 1024 * 1024 * 500 } });
 
-videosRouter.get("/:id/stream", async (req, res) => {
-  const video = await File.findById(req.params.id);
-  if (!video) return res.sendStatus(404);
-  const filePath = path.join(uploadDir, video.filename);
-  if (!fs.existsSync(filePath)) return res.sendStatus(404);
-  const size = fs.statSync(filePath).size;
-  const range = req.headers.range;
-
-  if (!range) {
-    res.writeHead(200, { "Content-Length": size, "Content-Type": video.mimeType, "Accept-Ranges": "bytes" });
-    return fs.createReadStream(filePath).pipe(res);
-  }
-
-  const [startText, endText] = range.replace(/bytes=/, "").split("-");
-  const start = parseInt(startText, 10);
-  const end = endText ? parseInt(endText, 10) : Math.min(start + 1024 * 1024 - 1, size - 1);
-  res.writeHead(206, {
-    "Content-Range": `bytes ${start}-${end}/${size}`,
-    "Accept-Ranges": "bytes",
-    "Content-Length": end - start + 1,
-    "Content-Type": video.mimeType
+fileRouter.post("/", auth, upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file)
+      return res.status(400).json({
+        message: "Choose a file"
   });
-  fs.createReadStream(filePath, { start, end }).pipe(res);
+    const file = await File.create({
+      title: req.body.title,
+      description: req.body.description,
+      filename: req.file.filename,
+      mimeType: req.file.mimetype,
+      owner: req.user._id
+    });
+    res.status(201).json({ file });
+  }
+  catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+fileRouter.get("/", auth, async (req, res) => {
+  const file = await File.find({
+    owner: req.user._id
+  }).sort({ createdAt: -1 });
+  res.json({ file });
+});
+fileRouter.get("/:id", auth, async (req, res) => {
+  const file = await File.findOne({
+    _id: req.params.id,
+    owner: req.user._id
+  }).populate("owner", "name");
+  if (!file)
+    return res.status(404).json({
+      message: "File not found"
+    });
+  res.json({ file });
+});
+fileRouter.get("/:id/stream", auth, async (req, res) => {
+  const file = await File.findOne({
+    _id: req.params.id,
+    owner: req.user._id
+  });
+  if (!file)
+    return res.sendStatus(404);
+  const filePath = path.join(uploadDir, file.filename);
+  if (!fs.existsSync(filePath))
+    return res.sendStatus(404);
+  res.sendFile(filePath);
+});
+fileRouter.delete("/:id", auth, async (req, res) => {
+  const file = await File.findOne({
+    _id: req.params.id,
+    owner: req.user._id
+  });
+  if (!file)
+    return res.status(404).json({
+      message: "File not found"
+    });
+  const filePath = path.join(uploadDir, file.filename);
+  if (fs.existsSync(filePath))
+    fs.unlinkSync(filePath);
+  await file.deleteOne();
+  res.json({
+    message: "Deleted"
+  });
+});
+
+app.use("/api/auth", authRouter);
+app.use("/api/file", fileRouter);
+app.use("/api/users", usersRouter);
+app.listen(config.port, () => {
+  console.log(`Server running on ${config.port}`);
 });
